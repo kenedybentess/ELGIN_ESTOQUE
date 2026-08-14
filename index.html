@@ -1,17 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<script>
-// ZERA TUDO NA INICIALIZAÇÃO - VERSÃO ZERADA
-(function() {
-  try {
-    localStorage.clear();
-    sessionStorage.clear();
-    console.log("WMS iniciado ZERADO");
-  } catch(e){}
-})();
-</script>
-
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>React Artifact</title>
@@ -53,10 +42,10 @@ Error generating stack: `+u.message+`
   <script>(function(){function m(a){var h=a.getAttribute("href");if(!h)return;try{var u=new URL(h,document.baseURI);if((u.protocol==="http:"||u.protocol==="https:")&&u.host!==location.host){a.target="_blank";a.rel="noopener noreferrer";}}catch(e){}}function s(){document.querySelectorAll("a[href]").forEach(m);}if(document.readyState!=="loading"){s();}else{document.addEventListener("DOMContentLoaded",s);}document.addEventListener("click",function(e){var a=e.target&&e.target.closest&&e.target.closest("a[href]");if(a){m(a);}},true);})();</script>
   
 
-<!-- FIREBASE INJETADO - NAO ALTERA VISUAL -->
+<!-- FIREBASE MULTI-DISPOSITIVO - SYNC REAL -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getDatabase, ref, set, onValue, get } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+import { getDatabase, ref, set, onValue, get, remove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCGeWCaoNDKKgiIWTajAiAyIQq04r_Q4qg",
@@ -73,96 +62,183 @@ const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 window._wmsDb = db;
 
-console.log("Firebase WMS conectado:", firebaseConfig.databaseURL);
+let isFirstLoad = true;
+let lastLocalHash = "";
+let isSyncingFromFirebase = false;
+let deviceId = localStorage.getItem('wms-device-id') || 'dev-' + Math.random().toString(36).substr(2,9);
+localStorage.setItem('wms-device-id', deviceId);
 
-// --- Sincronização com o arquivo original ---
-// O arquivo original salva estado internamente. Vamos interceptar e salvar no Firebase.
+function hashLocalStorage() {
+  let s = "";
+  for (let i=0; i<localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k === 'wms-device-id') continue;
+    s += k + localStorage.getItem(k);
+  }
+  return s.length + "-" + s.substr(0,100);
+}
 
-let lastSync = 0;
-let firebaseData = null;
+async function saveToFirebase() {
+  if (isSyncingFromFirebase) return;
+  const snapshot = {};
+  for (let i=0; i<localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k === 'wms-device-id') continue;
+    snapshot[k] = localStorage.getItem(k);
+  }
+  const currentHash = hashLocalStorage();
+  if (currentHash === lastLocalHash) return;
+  lastLocalHash = currentHash;
+  
+  try {
+    await set(ref(db, 'wms_sync/data'), {
+      snapshot: snapshot,
+      atualizadoEm: new Date().toISOString(),
+      deviceId: deviceId,
+      hash: currentHash
+    });
+    console.log("✓ Salvo no Firebase para outros dispositivos");
+    updateStatus("Conectado ✓ - Salvo", "#065f46", "#6ee7b7");
+  } catch(e) {
+    console.error("Erro salvar Firebase", e);
+    updateStatus("Erro: " + e.message, "#7f1d1d", "#fca5a5");
+  }
+}
 
-// 1. Escuta dados do Firebase
-const wmsRef = ref(db, 'wms_abas_final');
-onValue(wmsRef, (snap) => {
-  if (snap.exists()) {
-    firebaseData = snap.val();
-    console.log("Dados do Firebase recebidos:", firebaseData);
-    // Se tiver dados no Firebase e for a primeira carga, tenta restaurar
-    if (Date.now() - lastSync > 5000) {
-      // Dispara evento para o app original carregar se possível
-      window.dispatchEvent(new CustomEvent('firebase-data', { detail: firebaseData }));
-      // Também salva em localStorage para o app original pegar se ele usar
-      try {
-        if (firebaseData._raw) {
-          localStorage.setItem('wms-abas-final', firebaseData._raw);
-        }
-        if (firebaseData.snapshot) {
-          Object.keys(firebaseData.snapshot).forEach(k => {
-            localStorage.setItem(k, firebaseData.snapshot[k]);
-          });
-        }
-      } catch(e){}
+function updateStatus(text, bg, color) {
+  const el = document.getElementById('firebase-status');
+  if (el) {
+    el.textContent = "Firebase: " + text;
+    el.style.background = bg;
+    el.style.color = color;
+  }
+}
+
+// ESCUTA FIREBASE - Quando outro dispositivo salvar, atualiza aqui
+const syncRef = ref(db, 'wms_sync/data');
+onValue(syncRef, (snap) => {
+  if (!snap.exists()) {
+    updateStatus("Conectado ✓ - Vazio", "#1a1a1e", "#71717a");
+    return;
+  }
+  const data = snap.val();
+  
+  // Ignora se foi eu mesmo que salvei
+  if (data.deviceId === deviceId && !isFirstLoad) {
+    return;
+  }
+  
+  // Se é primeira carga e já tenho dados locais, não sobrescreve (evita perder dados)
+  // Mas se meu localStorage está vazio, carrega do Firebase
+  const localIsEmpty = localStorage.length <= 1; // só device-id
+  
+  if (isFirstLoad) {
+    isFirstLoad = false;
+    if (localIsEmpty && data.snapshot && Object.keys(data.snapshot).length > 0) {
+      console.log("Carregando dados do Firebase (primeira carga, local vazio)");
+      isSyncingFromFirebase = true;
+      Object.keys(data.snapshot).forEach(k => {
+        try { localStorage.setItem(k, data.snapshot[k]); } catch(e){}
+      });
+      lastLocalHash = hashLocalStorage();
+      isSyncingFromFirebase = false;
+      updateStatus("Conectado ✓ - Dados carregados", "#065f46", "#6ee7b7");
+      setTimeout(() => location.reload(), 500);
+      return;
+    }
+  } else {
+    // Atualização em tempo real de outro dispositivo
+    if (data.snapshot && Object.keys(data.snapshot).length > 0) {
+      const incomingHash = data.hash || "";
+      if (incomingHash !== lastLocalHash && data.deviceId !== deviceId) {
+        console.log("Nova atualização de outro dispositivo detectada, sincronizando...");
+        isSyncingFromFirebase = true;
+        // Limpa e coloca novos dados
+        const keepDeviceId = localStorage.getItem('wms-device-id');
+        localStorage.clear();
+        localStorage.setItem('wms-device-id', keepDeviceId);
+        Object.keys(data.snapshot).forEach(k => {
+          if (k !== 'wms-device-id') {
+            try { localStorage.setItem(k, data.snapshot[k]); } catch(e){}
+          }
+        });
+        lastLocalHash = hashLocalStorage();
+        isSyncingFromFirebase = false;
+        updateStatus("Atualizado de outro PC ✓", "#1e40af", "#93c5fd");
+        // Recarrega para o React pegar os novos dados
+        setTimeout(() => location.reload(), 800);
+      }
     }
   }
-  // Mostra status
-  const statusEl = document.getElementById('firebase-status');
-  if (statusEl) {
-    statusEl.textContent = 'Firebase: Conectado ✓';
-    statusEl.style.background = '#065f46';
-    statusEl.style.color = '#6ee7b7';
+  
+  if (!isFirstLoad) {
+    updateStatus("Conectado ✓", "#065f46", "#6ee7b7");
   }
+}, (error) => {
+  console.error("Erro Firebase onValue", error);
+  updateStatus("Erro: " + error.message, "#7f1d1d", "#fca5a5");
 });
 
-// 2. Função global para salvar tudo que o WMS fizer
-window.firebaseSalvarWMS = async (dados) => {
-  lastSync = Date.now();
-  try {
-    // Salva snapshot de todo localStorage
-    const snapshot = {};
-    for (let i=0; i<localStorage.length; i++) {
-      const key = localStorage.key(i);
-      snapshot[key] = localStorage.getItem(key);
-    }
-    await set(ref(db, 'wms_abas_final'), {
-      atualizadoEm: new Date().toISOString(),
-      snapshot: snapshot,
-      _raw: typeof dados === 'string' ? dados : JSON.stringify(dados || {}),
-      url: firebaseConfig.databaseURL
-    });
-    console.log("Salvo no Firebase");
-  } catch(e){ console.error("Erro Firebase", e); }
+// Intercepta qualquer mudança no localStorage
+const origSetItem = localStorage.setItem.bind(localStorage);
+localStorage.setItem = function(k, v) {
+  origSetItem(k, v);
+  if (k === 'wms-device-id' || isSyncingFromFirebase) return;
+  clearTimeout(window._fbDebounce);
+  window._fbDebounce = setTimeout(saveToFirebase, 800);
 };
 
-// 3. Intercepta localStorage.setItem automaticamente
-const originalSetItem = localStorage.setItem.bind(localStorage);
-localStorage.setItem = function(key, value) {
-  originalSetItem(key, value);
-  // Debounce salva no Firebase
-  clearTimeout(window._fbTimeout);
-  window._fbTimeout = setTimeout(() => {
-    window.firebaseSalvarWMS(value);
-  }, 1000);
+const origRemoveItem = localStorage.removeItem.bind(localStorage);
+localStorage.removeItem = function(k) {
+  origRemoveItem(k);
+  if (k === 'wms-device-id' || isSyncingFromFirebase) return;
+  clearTimeout(window._fbDebounce);
+  window._fbDebounce = setTimeout(saveToFirebase, 800);
 };
 
-// 4. Salva periodicamente também
-setInterval(() => {
-  if (document.visibilityState === 'visible') {
-    const all = {};
-    for (let i=0; i<localStorage.length; i++) {
-      const k = localStorage.key(i);
-      all[k] = localStorage.getItem(k);
-    }
-    if (Object.keys(all).length > 0) {
-      set(ref(db, 'wms_abas_final/autosave'), {
-        atualizadoEm: new Date().toISOString(),
-        snapshot: all
-      });
-    }
+const origClear = localStorage.clear.bind(localStorage);
+localStorage.clear = function() {
+  const keep = localStorage.getItem('wms-device-id');
+  origClear();
+  if (keep) origSetItem('wms-device-id', keep);
+  if (!isSyncingFromFirebase) {
+    clearTimeout(window._fbDebounce);
+    window._fbDebounce = setTimeout(saveToFirebase, 800);
   }
-}, 5000);
+};
 
+// Salva a cada 3 segundos também por segurança
+setInterval(() => {
+  if (!isSyncingFromFirebase && document.visibilityState === 'visible') {
+    saveToFirebase();
+  }
+}, 3000);
+
+// Função Zerar
+window.zerarTudoWMS = async () => {
+  if (!confirm('ZERAR EM TODOS OS DISPOSITIVOS? Isso apaga do Firebase e de todos os PCs!')) return;
+  try {
+    const keep = localStorage.getItem('wms-device-id');
+    localStorage.clear();
+    if (keep) localStorage.setItem('wms-device-id', keep);
+    await set(ref(db, 'wms_sync/data'), {
+      snapshot: {},
+      atualizadoEm: new Date().toISOString(),
+      deviceId: deviceId,
+      status: 'ZERADO',
+      hash: 'zero'
+    });
+    lastLocalHash = "";
+    alert("Zerado em todos os dispositivos! Recarregando...");
+    location.reload();
+  } catch(e) {
+    alert("Erro: " + e.message);
+  }
+};
+
+console.log("Firebase Multi-Dispositivo iniciado - Device:", deviceId);
 </script>
-<!-- Indicador discreto de conexão - mesmo estilo do arquivo original -->
+
 <style>
 #firebase-status {
   position: fixed;
@@ -176,62 +252,7 @@ setInterval(() => {
   background: #1a1a1e;
   color: #71717a;
   border: 1px solid #27272a;
-  opacity: 0.9;
 }
-</style>
-<div id="firebase-status">Firebase: Conectando...</div>
-
-
-<script>
-// Função para zerar tudo
-window.zerarTudoWMS = async () => {
-  if (!confirm('Tem certeza que quer ZERAR TODO o estoque e Firebase? Isso apaga tudo!')) return;
-  try {
-    // Limpa localStorage
-    localStorage.clear();
-    console.log("localStorage limpo");
-    
-    // Limpa Firebase
-    if (window._wmsDb) {
-      const { ref, set, remove } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js");
-      await set(ref(window._wmsDb, 'wms_abas_final'), {
-        zeradoEm: new Date().toISOString(),
-        snapshot: {},
-        status: 'ZERADO',
-        totais: {
-          geral: 0, mp: 0, embalagem: 0, quimico: 0, acabado: 0, reserva: 0
-        }
-      });
-      await set(ref(window._wmsDb, 'wms'), null);
-      await set(ref(window._wmsDb, 'totais'), null);
-      await set(ref(window._wmsDb, 'wms_abas_final/autosave'), null);
-      console.log("Firebase zerado");
-    }
-    alert("Tudo zerado! Recarregando...");
-    location.reload();
-  } catch(e) {
-    console.error(e);
-    alert("Erro ao zerar: " + e.message);
-  }
-};
-
-// Auto zera se URL tiver ?zerar
-if (window.location.search.includes('zerar')) {
-  setTimeout(() => {
-    localStorage.clear();
-    console.log("Auto-zerado via URL");
-  }, 100);
-}
-
-// Atalho: Ctrl+Shift+Z para zerar
-document.addEventListener('keydown', (e) => {
-  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'z') {
-    window.zerarTudoWMS();
-  }
-});
-</script>
-
-<style>
 #btn-zerar-wms {
   position: fixed;
   bottom: 8px;
@@ -240,51 +261,15 @@ document.addEventListener('keydown', (e) => {
   font-family: 'Geist Mono', monospace;
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.05em;
   padding: 6px 12px;
   border-radius: 6px;
   background: #7f1d1d;
   color: #fca5a5;
   border: 1px solid #991b1b;
   cursor: pointer;
-  opacity: 0.9;
-  transition: all 0.2s;
-}
-#btn-zerar-wms:hover {
-  background: #991b1b;
-  color: #fecaca;
-  transform: scale(1.05);
-}
-#btn-zerar-wms:active {
-  transform: scale(0.95);
 }
 </style>
-<button id="btn-zerar-wms" onclick="window.zerarTudoWMS()" title="Ctrl+Shift+Z">🗑️ ZERAR TUDO</button>
-
-<script>
-// Tenta também injetar um botão dentro do header original do WMS para ficar mais integrado
-setTimeout(() => {
-  try {
-    // Procura pelo header ou área de ações do WMS original
-    const headers = document.querySelectorAll('header, [class*="header"], [class*="toolbar"]');
-    // Se achar o título WMS, coloca botão ao lado
-    const wmsTitle = Array.from(document.querySelectorAll('*')).find(el => el.textContent && el.textContent.includes('WMS Controle Estoque Multi-SKU'));
-    if (wmsTitle && wmsTitle.parentElement) {
-      const container = wmsTitle.parentElement.parentElement;
-      if (container) {
-        const btn = document.createElement('button');
-        btn.textContent = 'ZERAR';
-        btn.style.cssText = 'margin-left:12px; font-family:Geist Mono; font-size:10px; padding:4px 8px; border-radius:6px; background:#7f1d1d; color:#fca5a5; border:1px solid #991b1b; cursor:pointer;';
-        btn.onclick = window.zerarTudoWMS;
-        // Tenta colocar ao lado do título
-        if (wmsTitle.nextSibling) {
-          wmsTitle.parentElement.appendChild(btn);
-        }
-      }
-    }
-  } catch(e){ console.log("Não consegui injetar no header, mantendo botão flutuante", e); }
-}, 1500);
-</script>
-
+<div id="firebase-status">Firebase: Conectando...</div>
+<button id="btn-zerar-wms" onclick="window.zerarTudoWMS()">🗑️ ZERAR TUDO</button>
 </body>
 </html>
