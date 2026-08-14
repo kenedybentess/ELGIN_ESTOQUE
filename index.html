@@ -42,10 +42,10 @@ Error generating stack: `+u.message+`
   <script>(function(){function m(a){var h=a.getAttribute("href");if(!h)return;try{var u=new URL(h,document.baseURI);if((u.protocol==="http:"||u.protocol==="https:")&&u.host!==location.host){a.target="_blank";a.rel="noopener noreferrer";}}catch(e){}}function s(){document.querySelectorAll("a[href]").forEach(m);}if(document.readyState!=="loading"){s();}else{document.addEventListener("DOMContentLoaded",s);}document.addEventListener("click",function(e){var a=e.target&&e.target.closest&&e.target.closest("a[href]");if(a){m(a);}},true);})();</script>
   
 
-<!-- FIREBASE MULTI-DISPOSITIVO - SYNC REAL -->
+<!-- FIREBASE FIX - SEM CHAVES INVALIDAS -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getDatabase, ref, set, onValue, get, remove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCGeWCaoNDKKgiIWTajAiAyIQq04r_Q4qg",
@@ -62,45 +62,53 @@ const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 window._wmsDb = db;
 
-let isFirstLoad = true;
-let lastLocalHash = "";
-let isSyncingFromFirebase = false;
 let deviceId = localStorage.getItem('wms-device-id') || 'dev-' + Math.random().toString(36).substr(2,9);
 localStorage.setItem('wms-device-id', deviceId);
+let isSyncingFromFirebase = false;
+let lastHash = "";
+let isFirstLoad = true;
 
-function hashLocalStorage() {
-  let s = "";
+function sanitizeKey(key) {
+  // Firebase não aceita . # $ / [ ]
+  // Troca por _
+  return key.replace(/[.#$\/\[\]]/g, '_');
+}
+
+function getSafeSnapshot() {
+  const arr = [];
   for (let i=0; i<localStorage.length; i++) {
     const k = localStorage.key(i);
+    if (!k) continue;
     if (k === 'wms-device-id') continue;
-    s += k + localStorage.getItem(k);
+    if (k.startsWith('firebase:')) continue; // IGNORA chaves do Firebase que causam o erro
+    if (k.includes('firebase')) continue;
+    const v = localStorage.getItem(k);
+    arr.push({ k: k, v: v });
   }
-  return s.length + "-" + s.substr(0,100);
+  return arr;
+}
+
+function hashSnapshot(arr) {
+  return JSON.stringify(arr).length + "_" + (arr.length);
 }
 
 async function saveToFirebase() {
   if (isSyncingFromFirebase) return;
-  const snapshot = {};
-  for (let i=0; i<localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (k === 'wms-device-id') continue;
-    snapshot[k] = localStorage.getItem(k);
-  }
-  const currentHash = hashLocalStorage();
-  if (currentHash === lastLocalHash) return;
-  lastLocalHash = currentHash;
-  
+  const safeArr = getSafeSnapshot();
+  const h = hashSnapshot(safeArr);
+  if (h === lastHash) return;
+  lastHash = h;
   try {
-    await set(ref(db, 'wms_sync/data'), {
-      snapshot: snapshot,
+    await set(ref(db, 'wms_sync_v2'), {
+      data: safeArr, // Array, não objeto com chaves inválidas
       atualizadoEm: new Date().toISOString(),
       deviceId: deviceId,
-      hash: currentHash
+      hash: h
     });
-    console.log("✓ Salvo no Firebase para outros dispositivos");
     updateStatus("Conectado ✓ - Salvo", "#065f46", "#6ee7b7");
+    console.log("✓ Salvo no Firebase (v2) -", safeArr.length, "itens");
   } catch(e) {
-    console.error("Erro salvar Firebase", e);
+    console.error("Erro salvar", e);
     updateStatus("Erro: " + e.message, "#7f1d1d", "#fca5a5");
   }
 }
@@ -114,129 +122,134 @@ function updateStatus(text, bg, color) {
   }
 }
 
-// ESCUTA FIREBASE - Quando outro dispositivo salvar, atualiza aqui
-const syncRef = ref(db, 'wms_sync/data');
+// ESCUTA
+const syncRef = ref(db, 'wms_sync_v2');
 onValue(syncRef, (snap) => {
   if (!snap.exists()) {
     updateStatus("Conectado ✓ - Vazio", "#1a1a1e", "#71717a");
+    if (isFirstLoad) isFirstLoad = false;
     return;
   }
-  const data = snap.val();
-  
-  // Ignora se foi eu mesmo que salvei
-  if (data.deviceId === deviceId && !isFirstLoad) {
-    return;
-  }
-  
-  // Se é primeira carga e já tenho dados locais, não sobrescreve (evita perder dados)
-  // Mas se meu localStorage está vazio, carrega do Firebase
-  const localIsEmpty = localStorage.length <= 1; // só device-id
-  
+  const payload = snap.val();
+  if (payload.deviceId === deviceId && !isFirstLoad) return;
+
+  const localIsEmpty = (() => {
+    let count = 0;
+    for (let i=0; i<localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && !k.startsWith('firebase:') && !k.includes('firebase') && k !== 'wms-device-id') count++;
+    }
+    return count === 0;
+  })();
+
   if (isFirstLoad) {
     isFirstLoad = false;
-    if (localIsEmpty && data.snapshot && Object.keys(data.snapshot).length > 0) {
-      console.log("Carregando dados do Firebase (primeira carga, local vazio)");
+    if (localIsEmpty && payload.data && payload.data.length > 0) {
+      console.log("Carregando do Firebase - primeira carga");
       isSyncingFromFirebase = true;
-      Object.keys(data.snapshot).forEach(k => {
-        try { localStorage.setItem(k, data.snapshot[k]); } catch(e){}
+      payload.data.forEach(item => {
+        try { localStorage.setItem(item.k, item.v); } catch(e){}
       });
-      lastLocalHash = hashLocalStorage();
+      lastHash = hashSnapshot(payload.data);
       isSyncingFromFirebase = false;
-      updateStatus("Conectado ✓ - Dados carregados", "#065f46", "#6ee7b7");
-      setTimeout(() => location.reload(), 500);
+      updateStatus("Dados carregados do outro PC ✓", "#065f46", "#6ee7b7");
+      setTimeout(() => location.reload(), 600);
       return;
     }
-  } else {
-    // Atualização em tempo real de outro dispositivo
-    if (data.snapshot && Object.keys(data.snapshot).length > 0) {
-      const incomingHash = data.hash || "";
-      if (incomingHash !== lastLocalHash && data.deviceId !== deviceId) {
-        console.log("Nova atualização de outro dispositivo detectada, sincronizando...");
-        isSyncingFromFirebase = true;
-        // Limpa e coloca novos dados
-        const keepDeviceId = localStorage.getItem('wms-device-id');
-        localStorage.clear();
-        localStorage.setItem('wms-device-id', keepDeviceId);
-        Object.keys(data.snapshot).forEach(k => {
-          if (k !== 'wms-device-id') {
-            try { localStorage.setItem(k, data.snapshot[k]); } catch(e){}
-          }
-        });
-        lastLocalHash = hashLocalStorage();
-        isSyncingFromFirebase = false;
-        updateStatus("Atualizado de outro PC ✓", "#1e40af", "#93c5fd");
-        // Recarrega para o React pegar os novos dados
-        setTimeout(() => location.reload(), 800);
-      }
-    }
-  }
-  
-  if (!isFirstLoad) {
     updateStatus("Conectado ✓", "#065f46", "#6ee7b7");
+    return;
   }
-}, (error) => {
-  console.error("Erro Firebase onValue", error);
-  updateStatus("Erro: " + error.message, "#7f1d1d", "#fca5a5");
+
+  // Atualização em tempo real
+  if (payload.data && payload.hash !== lastHash && payload.deviceId !== deviceId) {
+    console.log("Atualização de outro dispositivo!");
+    isSyncingFromFirebase = true;
+    const keep = localStorage.getItem('wms-device-id');
+    // Limpa só chaves do WMS, mantém firebase: para não quebrar
+    const toRemove = [];
+    for (let i=0; i<localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && !k.startsWith('firebase:') && !k.includes('firebase') && k !== 'wms-device-id') toRemove.push(k);
+    }
+    toRemove.forEach(k => localStorage.removeItem(k));
+    if (keep) localStorage.setItem('wms-device-id', keep);
+    
+    payload.data.forEach(item => {
+      try { localStorage.setItem(item.k, item.v); } catch(e){}
+    });
+    lastHash = payload.hash;
+    isSyncingFromFirebase = false;
+    updateStatus("Atualizado do outro PC! Recarregando...", "#1e40af", "#93c5fd");
+    setTimeout(() => location.reload(), 800);
+  }
+}, (err) => {
+  updateStatus("Erro: " + err.message, "#7f1d1d", "#fca5a5");
 });
 
-// Intercepta qualquer mudança no localStorage
-const origSetItem = localStorage.setItem.bind(localStorage);
-localStorage.setItem = function(k, v) {
-  origSetItem(k, v);
-  if (k === 'wms-device-id' || isSyncingFromFirebase) return;
-  clearTimeout(window._fbDebounce);
-  window._fbDebounce = setTimeout(saveToFirebase, 800);
+// Intercepta mudanças
+const origSet = localStorage.setItem.bind(localStorage);
+localStorage.setItem = function(k,v) {
+  origSet(k,v);
+  if (k === 'wms-device-id' || k.startsWith('firebase:') || k.includes('firebase') || isSyncingFromFirebase) return;
+  clearTimeout(window._fbDeb);
+  window._fbDeb = setTimeout(saveToFirebase, 700);
 };
-
-const origRemoveItem = localStorage.removeItem.bind(localStorage);
+const origRem = localStorage.removeItem.bind(localStorage);
 localStorage.removeItem = function(k) {
-  origRemoveItem(k);
-  if (k === 'wms-device-id' || isSyncingFromFirebase) return;
-  clearTimeout(window._fbDebounce);
-  window._fbDebounce = setTimeout(saveToFirebase, 800);
+  origRem(k);
+  if (k === 'wms-device-id' || k.startsWith('firebase:') || isSyncingFromFirebase) return;
+  clearTimeout(window._fbDeb);
+  window._fbDeb = setTimeout(saveToFirebase, 700);
 };
-
 const origClear = localStorage.clear.bind(localStorage);
 localStorage.clear = function() {
   const keep = localStorage.getItem('wms-device-id');
+  // Guarda chaves firebase
+  const fbKeys = {};
+  for (let i=0; i<localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && (k.startsWith('firebase:') || k.includes('firebase'))) fbKeys[k] = localStorage.getItem(k);
+  }
   origClear();
-  if (keep) origSetItem('wms-device-id', keep);
+  if (keep) origSet('wms-device-id', keep);
+  Object.keys(fbKeys).forEach(k => origSet(k, fbKeys[k]));
   if (!isSyncingFromFirebase) {
-    clearTimeout(window._fbDebounce);
-    window._fbDebounce = setTimeout(saveToFirebase, 800);
+    clearTimeout(window._fbDeb);
+    window._fbDeb = setTimeout(saveToFirebase, 700);
   }
 };
 
-// Salva a cada 3 segundos também por segurança
 setInterval(() => {
-  if (!isSyncingFromFirebase && document.visibilityState === 'visible') {
-    saveToFirebase();
-  }
+  if (!isSyncingFromFirebase && document.visibilityState === 'visible') saveToFirebase();
 }, 3000);
 
-// Função Zerar
 window.zerarTudoWMS = async () => {
-  if (!confirm('ZERAR EM TODOS OS DISPOSITIVOS? Isso apaga do Firebase e de todos os PCs!')) return;
+  if (!confirm('ZERAR EM TODOS OS DISPOSITIVOS?')) return;
   try {
     const keep = localStorage.getItem('wms-device-id');
+    const fbKeys = {};
+    for (let i=0; i<localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('firebase:') || k.includes('firebase'))) fbKeys[k] = localStorage.getItem(k);
+    }
     localStorage.clear();
     if (keep) localStorage.setItem('wms-device-id', keep);
-    await set(ref(db, 'wms_sync/data'), {
-      snapshot: {},
+    Object.keys(fbKeys).forEach(k => localStorage.setItem(k, fbKeys[k]));
+    
+    await set(ref(db, 'wms_sync_v2'), {
+      data: [],
       atualizadoEm: new Date().toISOString(),
       deviceId: deviceId,
       status: 'ZERADO',
-      hash: 'zero'
+      hash: 'zero-' + Date.now()
     });
-    lastLocalHash = "";
-    alert("Zerado em todos os dispositivos! Recarregando...");
+    lastHash = "";
+    alert("Zerado em todos!");
     location.reload();
-  } catch(e) {
-    alert("Erro: " + e.message);
-  }
+  } catch(e){ alert(e.message); }
 };
 
-console.log("Firebase Multi-Dispositivo iniciado - Device:", deviceId);
+console.log("Firebase FIX v2 iniciado - Device:", deviceId);
 </script>
 
 <style>
@@ -247,11 +260,15 @@ console.log("Firebase Multi-Dispositivo iniciado - Device:", deviceId);
   z-index: 9999;
   font-family: 'Geist Mono', monospace;
   font-size: 10px;
-  padding: 4px 8px;
+  padding: 5px 10px;
   border-radius: 6px;
   background: #1a1a1e;
   color: #71717a;
   border: 1px solid #27272a;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 #btn-zerar-wms {
   position: fixed;
