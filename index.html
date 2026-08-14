@@ -41,5 +41,134 @@ Error generating stack: `+u.message+`
 </script>
   <script>(function(){function m(a){var h=a.getAttribute("href");if(!h)return;try{var u=new URL(h,document.baseURI);if((u.protocol==="http:"||u.protocol==="https:")&&u.host!==location.host){a.target="_blank";a.rel="noopener noreferrer";}}catch(e){}}function s(){document.querySelectorAll("a[href]").forEach(m);}if(document.readyState!=="loading"){s();}else{document.addEventListener("DOMContentLoaded",s);}document.addEventListener("click",function(e){var a=e.target&&e.target.closest&&e.target.closest("a[href]");if(a){m(a);}},true);})();</script>
   
+
+<!-- FIREBASE INJETADO - NAO ALTERA VISUAL -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getDatabase, ref, set, onValue, get } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCGeWCaoNDKKgiIWTajAiAyIQq04r_Q4qg",
+  authDomain: "wms-abas.firebaseapp.com",
+  databaseURL: "https://wms-abas-default-rtdb.firebaseio.com",
+  projectId: "wms-abas",
+  storageBucket: "wms-abas.firebasestorage.app",
+  messagingSenderId: "930901210980",
+  appId: "1:930901210980:web:3bd3f791ff4d1cd3ae6c71",
+  measurementId: "G-QR2B5BYXVZ"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+window._wmsDb = db;
+
+console.log("Firebase WMS conectado:", firebaseConfig.databaseURL);
+
+// --- Sincronização com o arquivo original ---
+// O arquivo original salva estado internamente. Vamos interceptar e salvar no Firebase.
+
+let lastSync = 0;
+let firebaseData = null;
+
+// 1. Escuta dados do Firebase
+const wmsRef = ref(db, 'wms_abas_final');
+onValue(wmsRef, (snap) => {
+  if (snap.exists()) {
+    firebaseData = snap.val();
+    console.log("Dados do Firebase recebidos:", firebaseData);
+    // Se tiver dados no Firebase e for a primeira carga, tenta restaurar
+    if (Date.now() - lastSync > 5000) {
+      // Dispara evento para o app original carregar se possível
+      window.dispatchEvent(new CustomEvent('firebase-data', { detail: firebaseData }));
+      // Também salva em localStorage para o app original pegar se ele usar
+      try {
+        if (firebaseData._raw) {
+          localStorage.setItem('wms-abas-final', firebaseData._raw);
+        }
+        if (firebaseData.snapshot) {
+          Object.keys(firebaseData.snapshot).forEach(k => {
+            localStorage.setItem(k, firebaseData.snapshot[k]);
+          });
+        }
+      } catch(e){}
+    }
+  }
+  // Mostra status
+  const statusEl = document.getElementById('firebase-status');
+  if (statusEl) {
+    statusEl.textContent = 'Firebase: Conectado ✓';
+    statusEl.style.background = '#065f46';
+    statusEl.style.color = '#6ee7b7';
+  }
+});
+
+// 2. Função global para salvar tudo que o WMS fizer
+window.firebaseSalvarWMS = async (dados) => {
+  lastSync = Date.now();
+  try {
+    // Salva snapshot de todo localStorage
+    const snapshot = {};
+    for (let i=0; i<localStorage.length; i++) {
+      const key = localStorage.key(i);
+      snapshot[key] = localStorage.getItem(key);
+    }
+    await set(ref(db, 'wms_abas_final'), {
+      atualizadoEm: new Date().toISOString(),
+      snapshot: snapshot,
+      _raw: typeof dados === 'string' ? dados : JSON.stringify(dados || {}),
+      url: firebaseConfig.databaseURL
+    });
+    console.log("Salvo no Firebase");
+  } catch(e){ console.error("Erro Firebase", e); }
+};
+
+// 3. Intercepta localStorage.setItem automaticamente
+const originalSetItem = localStorage.setItem.bind(localStorage);
+localStorage.setItem = function(key, value) {
+  originalSetItem(key, value);
+  // Debounce salva no Firebase
+  clearTimeout(window._fbTimeout);
+  window._fbTimeout = setTimeout(() => {
+    window.firebaseSalvarWMS(value);
+  }, 1000);
+};
+
+// 4. Salva periodicamente também
+setInterval(() => {
+  if (document.visibilityState === 'visible') {
+    const all = {};
+    for (let i=0; i<localStorage.length; i++) {
+      const k = localStorage.key(i);
+      all[k] = localStorage.getItem(k);
+    }
+    if (Object.keys(all).length > 0) {
+      set(ref(db, 'wms_abas_final/autosave'), {
+        atualizadoEm: new Date().toISOString(),
+        snapshot: all
+      });
+    }
+  }
+}, 5000);
+
+</script>
+<!-- Indicador discreto de conexão - mesmo estilo do arquivo original -->
+<style>
+#firebase-status {
+  position: fixed;
+  bottom: 8px;
+  left: 8px;
+  z-index: 9999;
+  font-family: 'Geist Mono', monospace;
+  font-size: 10px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #1a1a1e;
+  color: #71717a;
+  border: 1px solid #27272a;
+  opacity: 0.9;
+}
+</style>
+<div id="firebase-status">Firebase: Conectando...</div>
+
 </body>
 </html>
