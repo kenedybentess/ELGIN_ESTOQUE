@@ -230,5 +230,61 @@ document.addEventListener('keydown', (e) => {
   }
 });
 </script>
+
+<style>
+#btn-zerar-wms {
+  position: fixed;
+  bottom: 8px;
+  right: 8px;
+  z-index: 9999;
+  font-family: 'Geist Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: #7f1d1d;
+  color: #fca5a5;
+  border: 1px solid #991b1b;
+  cursor: pointer;
+  opacity: 0.9;
+  transition: all 0.2s;
+}
+#btn-zerar-wms:hover {
+  background: #991b1b;
+  color: #fecaca;
+  transform: scale(1.05);
+}
+#btn-zerar-wms:active {
+  transform: scale(0.95);
+}
+</style>
+<button id="btn-zerar-wms" onclick="window.zerarTudoWMS()" title="Ctrl+Shift+Z">🗑️ ZERAR TUDO</button>
+
+<script>
+// Tenta também injetar um botão dentro do header original do WMS para ficar mais integrado
+setTimeout(() => {
+  try {
+    // Procura pelo header ou área de ações do WMS original
+    const headers = document.querySelectorAll('header, [class*="header"], [class*="toolbar"]');
+    // Se achar o título WMS, coloca botão ao lado
+    const wmsTitle = Array.from(document.querySelectorAll('*')).find(el => el.textContent && el.textContent.includes('WMS Controle Estoque Multi-SKU'));
+    if (wmsTitle && wmsTitle.parentElement) {
+      const container = wmsTitle.parentElement.parentElement;
+      if (container) {
+        const btn = document.createElement('button');
+        btn.textContent = 'ZERAR';
+        btn.style.cssText = 'margin-left:12px; font-family:Geist Mono; font-size:10px; padding:4px 8px; border-radius:6px; background:#7f1d1d; color:#fca5a5; border:1px solid #991b1b; cursor:pointer;';
+        btn.onclick = window.zerarTudoWMS;
+        // Tenta colocar ao lado do título
+        if (wmsTitle.nextSibling) {
+          wmsTitle.parentElement.appendChild(btn);
+        }
+      }
+    }
+  } catch(e){ console.log("Não consegui injetar no header, mantendo botão flutuante", e); }
+}, 1500);
+</script>
+
 </body>
 </html>
